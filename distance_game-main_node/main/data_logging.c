@@ -58,7 +58,7 @@ esp_err_t mount_filesystem() {
     return ESP_OK;
 }
 
-esp_err_t log_data(game_session_result_t *session) {
+esp_err_t save_game_data(const game_session_result_t *session) {
     log_header_t header = {0};
     FILE *f = fopen(LOG_FILE_NAME, "r+b");
 
@@ -108,7 +108,7 @@ esp_err_t log_data(game_session_result_t *session) {
     return ESP_OK;
 }
 
-esp_err_t read_log(game_session_result_t *buffer, size_t buffer_size) {
+esp_err_t read_all_games_log(game_session_result_t *buffer, size_t buffer_size) {
     FILE *f = fopen(LOG_FILE_NAME, "rb");
     if (f == NULL) {
         ESP_LOGE(TAG, "Failed to open log file for reading");
@@ -141,7 +141,7 @@ esp_err_t read_log(game_session_result_t *buffer, size_t buffer_size) {
     return ESP_OK;
 }
 
-esp_err_t clear_log() {
+esp_err_t clear_all_games_log() {
     FILE *f = fopen(LOG_FILE_NAME, "wb");
     if (f == NULL) {
         ESP_LOGE(TAG, "Failed to open log file for clearing");

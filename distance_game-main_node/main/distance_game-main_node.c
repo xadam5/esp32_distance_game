@@ -11,11 +11,14 @@
 #include <freertos/event_groups.h>
 #include <freertos/queue.h>
 #include <esp_event.h>
-#include "ble_driver.h"
-#include "gpio_driver.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_random.h"
+
+#include "ble_driver.h"
+#include "gpio_driver.h"
+#include "server.h"
+#include "wifi_connection.h"
 
 extern esp_err_t start_server(void);
 
@@ -32,31 +35,8 @@ typedef struct {
 static QueueHandle_t button_queue = NULL;
 
 #define GAME_ROUNDS_PER_MATCH 3
-#define GAME_SESSION_NVS_NAMESPACE "distance_game"
-#define GAME_SESSION_NVS_INDEX_KEY "game_hist_idx"
-#define GAME_SESSION_NVS_SLOT_KEY_PREFIX "game_slot_"
-#define GAME_HISTORY_SLOT_COUNT 20
 #define GAME_HISTORY_INVALID_INDEX UINT32_MAX
 #define MEASUREMENT_WAIT_SLICE_MS 200
-
-typedef struct {
-    int target_number;
-    int p1_measurement;
-    int p2_measurement;
-    int p1_distance;
-    int p2_distance;
-    int p1_score;
-    int p2_score;
-    bool valid;
-} game_round_result_t;
-
-typedef struct {
-    game_round_result_t rounds[GAME_ROUNDS_PER_MATCH];
-    int total_p1_score;
-    int total_p2_score;
-    bool aborted;
-    bool completed;
-} game_session_result_t;
 
 typedef enum {
     DISCONNECTED,
@@ -187,129 +167,6 @@ static void init_empty_game_session(game_session_result_t *session)
     }
 }
 
-static void format_game_history_slot_key(uint32_t slot_index, char *out_key, size_t out_key_size)
-{
-    snprintf(out_key, out_key_size, GAME_SESSION_NVS_SLOT_KEY_PREFIX "%02u", (unsigned)slot_index);
-}
-
-static bool clear_game_history_storage(void)
-{
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(GAME_SESSION_NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS namespace '%s' for history reset: %s", GAME_SESSION_NVS_NAMESPACE, esp_err_to_name(err));
-        return false;
-    }
-
-    game_session_result_t empty_session = {0};
-    init_empty_game_session(&empty_session);
-
-    char slot_key[sizeof(GAME_SESSION_NVS_SLOT_KEY_PREFIX) + 3U];
-    for (uint32_t slot_index = 0; slot_index < GAME_HISTORY_SLOT_COUNT; ++slot_index) {
-        format_game_history_slot_key(slot_index, slot_key, sizeof(slot_key));
-        err = nvs_set_blob(handle, slot_key, &empty_session, sizeof(empty_session));
-        if (err != ESP_OK) {
-            break;
-        }
-    }
-
-    if (err == ESP_OK) {
-        err = nvs_set_u32(handle, GAME_SESSION_NVS_INDEX_KEY, GAME_HISTORY_INVALID_INDEX);
-    }
-    if (err == ESP_OK) {
-        err = nvs_commit(handle);
-    }
-
-    nvs_close(handle);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to clear game history storage: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    game_history_last_index = GAME_HISTORY_INVALID_INDEX;
-    game_history_index_loaded = true;
-    return true;
-}
-
-static bool load_game_history_index_from_nvs(void)
-{
-    if (game_history_index_loaded) {
-        return true;
-    }
-
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(GAME_SESSION_NVS_NAMESPACE, NVS_READONLY, &handle);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        return clear_game_history_storage();
-    }
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS namespace '%s' for history index load: %s", GAME_SESSION_NVS_NAMESPACE, esp_err_to_name(err));
-        return false;
-    }
-
-    uint32_t last_index = GAME_HISTORY_INVALID_INDEX;
-    err = nvs_get_u32(handle, GAME_SESSION_NVS_INDEX_KEY, &last_index);
-    nvs_close(handle);
-
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        return clear_game_history_storage();
-    }
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to load game history index: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    if (last_index >= GAME_HISTORY_SLOT_COUNT) {
-        ESP_LOGW(TAG, "Stored game history index %u is out of range, clearing history storage", (unsigned)last_index);
-        return clear_game_history_storage();
-    }
-
-    game_history_last_index = last_index;
-    game_history_index_loaded = true;
-    return true;
-}
-
-static bool save_game_session_to_nvs(const game_session_result_t *session)
-{
-    if (!load_game_history_index_from_nvs()) {
-        return false;
-    }
-
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(GAME_SESSION_NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS namespace '%s': %s", GAME_SESSION_NVS_NAMESPACE, esp_err_to_name(err));
-        return false;
-    }
-
-    uint32_t slot_index = (game_history_last_index == GAME_HISTORY_INVALID_INDEX)
-                              ? 0U
-                              : ((game_history_last_index + 1U) % GAME_HISTORY_SLOT_COUNT);
-    char slot_key[sizeof(GAME_SESSION_NVS_SLOT_KEY_PREFIX) + 3U];
-    format_game_history_slot_key(slot_index, slot_key, sizeof(slot_key));
-
-    err = nvs_set_blob(handle, slot_key, session, sizeof(*session));
-    if (err == ESP_OK) {
-        err = nvs_set_u32(handle, GAME_SESSION_NVS_INDEX_KEY, slot_index);
-    }
-    if (err == ESP_OK) {
-        err = nvs_commit(handle);
-    }
-
-    nvs_close(handle);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to save game session to NVS: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    game_history_last_index = slot_index;
-    game_history_index_loaded = true;
-    ESP_LOGI(TAG, "Game session saved to NVS: total_p1=%d total_p2=%d", session->total_p1_score, session->total_p2_score);
-    return true;
-}
-
 static bool run_game_round(game_session_result_t *session, size_t round_index)
 {
     if (!session || round_index >= GAME_ROUNDS_PER_MATCH) {
@@ -402,7 +259,7 @@ static void game_session_task(void *arg)
 
     if (game_session_end_requested || current_state == ENDING) {
         session.aborted = true;
-        ESP_LOGI(TAG, "Ending phase reached; skipping NVS save and returning to IDLE");
+        ESP_LOGI(TAG, "Ending phase reached; skipping game data save and returning to IDLE");
         current_state = IDLE;
     } else if (!session.aborted && !game_session_abort_requested) {
         session.completed = true;
@@ -410,10 +267,10 @@ static void game_session_task(void *arg)
         if (end_ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to send end command via BLE: %s", esp_err_to_name(end_ret));
         }
-        (void)save_game_session_to_nvs(&session);
+        (void)save_game_data(&session);
         current_state = IDLE;
     } else {
-        ESP_LOGW(TAG, "Game session aborted; skipping NVS save");
+        ESP_LOGW(TAG, "Game session aborted; skipping game data save");
         current_state = ble_is_connected() ? IDLE : DISCONNECTED;
     }
 
@@ -587,13 +444,7 @@ static void button_handler_task(void* arg) {
 
 void app_main(void)
 {
-    // Initialize NVS.
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK( ret );
+    mount_filesystem();
 
     gpio_setup();
 
@@ -608,6 +459,16 @@ void app_main(void)
 
     if (!load_game_history_index_from_nvs()) {
         ESP_LOGW(TAG, "Game history index could not be loaded; new sessions will start from slot 0");
+    }
+
+    wifi_init_sta(MY_SSID, MY_PASS);
+    while (!wifi_connected) {
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+    }
+
+    if (start_server() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start server!");
+        return;
     }
 
     xTaskCreate(connection_monitor_task, "connection_monitor", 2048, NULL, 9, NULL);
