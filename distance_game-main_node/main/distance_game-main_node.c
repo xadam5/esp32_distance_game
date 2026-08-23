@@ -19,24 +19,16 @@
 #include "gpio_driver.h"
 #include "server.h"
 #include "wifi_connection.h"
+#include "game_types.h"
+#include "data_logging.h"
 
-extern esp_err_t start_server(void);
+const char* TAG = "DISTANCE_GAME";
 
-const char* TAG = "distance_game";
-
-#define BUTTON_QUEUE_SIZE 10
-#define DEBOUNCE_TIME_MS 50
-
-typedef struct {
-    gpio_num_t pin;
-    uint32_t timestamp;
-} button_event_t;
-
-static QueueHandle_t button_queue = NULL;
-
-#define GAME_ROUNDS_PER_MATCH 3
-#define GAME_HISTORY_INVALID_INDEX UINT32_MAX
 #define MEASUREMENT_WAIT_SLICE_MS 200
+
+// Change these to your own SSID and password
+const char* MY_SSID = "SSID";
+const char* MY_PASS = "PASSWORD";
 
 typedef enum {
     DISCONNECTED,
@@ -52,8 +44,7 @@ static TaskHandle_t game_session_task_handle = NULL;
 static volatile bool game_session_abort_requested = false;
 static volatile bool game_session_end_requested = false;
 static volatile bool game_session_resume_requested = false;
-static uint32_t game_history_last_index = GAME_HISTORY_INVALID_INDEX;
-static bool game_history_index_loaded = false;
+static http_game_status_t http_game_status = {0};
 
 static void handle_remote_game_end_signal(void)
 {
@@ -119,8 +110,10 @@ static bool wait_for_both_measurements(int32_t timeout_ms, int *out_p1, int *out
 
         if (uuid == 0xFF01) {
             p1 = measurement;
+            ESP_LOGI(TAG, "Received measurement for Player 1: %d", p1);
         } else if (uuid == 0xFF02) {
             p2 = measurement;
+            ESP_LOGI(TAG, "Received measurement for Player 2: %d", p2);
         } else {
             ESP_LOGW(TAG, "Ignoring unexpected measurement uuid=0x%04x", uuid);
         }
@@ -151,25 +144,63 @@ static bool wait_for_round_resume(void)
     return can_continue;
 }
 
-static void init_empty_game_session(game_session_result_t *session)
+static void reset_http_game_status(void)
 {
-    if (!session) {
+    memset(&http_game_status, 0, sizeof(http_game_status));
+    http_game_status.active = true;
+    http_game_status.waiting_for_round = true;
+    http_game_status.total_rounds = GAME_ROUNDS_PER_MATCH;
+    http_game_status.target_number = -1;
+}
+
+static void update_http_game_status_for_new_round(size_t round_index, int target_number)
+{
+    http_game_status.current_round = (uint32_t)(round_index + 1U);
+    http_game_status.waiting_for_round = true;
+    http_game_status.round_result_ready = false;
+    http_game_status.final_result_ready = false;
+    http_game_status.target_number = target_number;
+    http_game_status.p1_measurement = 0;
+    http_game_status.p2_measurement = 0;
+    http_game_status.p1_distance = 0;
+    http_game_status.p2_distance = 0;
+    http_game_status.p1_score = 0;
+    http_game_status.p2_score = 0;
+}
+
+static void update_http_game_status_for_round(size_t round_index, const game_round_result_t *round, int total_p1_score, int total_p2_score)
+{
+    if (!round) {
         return;
     }
 
-    memset(session, 0, sizeof(*session));
-    for (size_t i = 0; i < GAME_ROUNDS_PER_MATCH; ++i) {
-        session->rounds[i].target_number = -1;
-        session->rounds[i].p1_measurement = -1;
-        session->rounds[i].p2_measurement = -1;
-        session->rounds[i].p1_distance = -1;
-        session->rounds[i].p2_distance = -1;
-    }
+    http_game_status.current_round = (uint32_t)(round_index + 1U);
+    http_game_status.waiting_for_round = false;
+    http_game_status.round_result_ready = true;
+    http_game_status.final_result_ready = false;
+    http_game_status.target_number = round->target_number;
+    http_game_status.p1_measurement = round->p1_measurement;
+    http_game_status.p2_measurement = round->p2_measurement;
+    http_game_status.p1_distance = round->p1_distance;
+    http_game_status.p2_distance = round->p2_distance;
+    http_game_status.p1_score = round->p1_score;
+    http_game_status.p2_score = round->p2_score;
+    http_game_status.total_p1_score = total_p1_score;
+    http_game_status.total_p2_score = total_p2_score;
+}
+
+static void mark_http_game_finished(bool completed)
+{
+    http_game_status.waiting_for_round = false;
+    http_game_status.round_result_ready = false;
+    http_game_status.final_result_ready = completed;
+    http_game_status.completed = completed;
+    http_game_status.active = !completed;
 }
 
 static bool run_game_round(game_session_result_t *session, size_t round_index)
 {
-    if (!session || round_index >= GAME_ROUNDS_PER_MATCH) {
+    if (!session || round_index >= (size_t)GAME_ROUNDS_PER_MATCH) {
         return false;
     }
 
@@ -184,6 +215,7 @@ static bool run_game_round(game_session_result_t *session, size_t round_index)
     ESP_LOGI(TAG, "--------------------------------");
     ESP_LOGI(TAG, "Round %u target distance: %d mm", (unsigned)(round_index + 1U), target_number);
     ESP_LOGI(TAG, "--------------------------------");
+    update_http_game_status_for_new_round(round_index, target_number);
 
     esp_err_t w = ble_write_cmd_start(1);
     if (w != ESP_OK) {
@@ -229,7 +261,8 @@ static bool run_game_round(game_session_result_t *session, size_t round_index)
              round->p2_distance,
              round->p1_score,
              round->p2_score);
-    
+
+    update_http_game_status_for_round(round_index, round, session->total_p1_score, session->total_p2_score);
     previous_state = ACTIVE_ROUND;
     current_state = (round_index + 1U < GAME_ROUNDS_PER_MATCH) ? BETWEEN_ROUNDS : IDLE;
     return true;
@@ -238,6 +271,7 @@ static bool run_game_round(game_session_result_t *session, size_t round_index)
 static void game_session_task(void *arg)
 {
     game_session_result_t session = {0};
+    reset_http_game_status();
 
     for (size_t round_index = 0; round_index < GAME_ROUNDS_PER_MATCH; ++round_index) {
         if (!run_game_round(&session, round_index)) {
@@ -246,7 +280,7 @@ static void game_session_task(void *arg)
         }
 
         if (round_index + 1U < GAME_ROUNDS_PER_MATCH) {
-            ESP_LOGI(TAG, "Waiting for button 0 or 2 to continue to the next round");
+            ESP_LOGI(TAG, "Waiting for clicking on button on website to continue to the next round");
             game_session_resume_requested = false;
             current_state = BETWEEN_ROUNDS;
             previous_state = ACTIVE_ROUND;
@@ -254,7 +288,14 @@ static void game_session_task(void *arg)
                 session.aborted = true;
                 break;
             }
+            http_game_status.waiting_for_round = true;
+            http_game_status.round_result_ready = false;
         }
+    }
+
+    esp_err_t end_ret = ble_write_cmd_end(1);
+    if (end_ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send end command via BLE: %s", esp_err_to_name(end_ret));
     }
 
     if (game_session_end_requested || current_state == ENDING) {
@@ -263,15 +304,21 @@ static void game_session_task(void *arg)
         current_state = IDLE;
     } else if (!session.aborted && !game_session_abort_requested) {
         session.completed = true;
-        esp_err_t end_ret = ble_write_cmd_end(1);
-        if (end_ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to send end command via BLE: %s", esp_err_to_name(end_ret));
-        }
         (void)save_game_data(&session);
         current_state = IDLE;
     } else {
         ESP_LOGW(TAG, "Game session aborted; skipping game data save");
         current_state = ble_is_connected() ? IDLE : DISCONNECTED;
+    }
+
+    if (!session.aborted && !game_session_abort_requested) {
+        mark_http_game_finished(true);
+    } else {
+        http_game_status.aborted = true;
+        http_game_status.active = false;
+        http_game_status.waiting_for_round = false;
+        http_game_status.round_result_ready = false;
+        http_game_status.final_result_ready = false;
     }
 
     previous_state = current_state;
@@ -293,7 +340,7 @@ static void ble_notification_handler(uint16_t uuid16, const uint8_t *data, uint1
     }
 }
 
-static void start_game_session(void)
+void start_game_session(void)
 {
     if (game_session_task_handle != NULL) {
         ESP_LOGW(TAG, "Game session already running");
@@ -308,7 +355,34 @@ static void start_game_session(void)
     }
 }
 
-static void connection_monitor_task(void *arg)
+void start_game_session_from_http(void)
+{
+    start_game_session();
+}
+
+void end_game_session_from_http(void)
+{
+    game_session_end_requested = true;
+    game_session_abort_requested = true;
+    previous_state = IDLE;
+    current_state = IDLE;
+}
+
+void continue_game_session_from_http(void)
+{
+    if (http_game_status.active && http_game_status.round_result_ready && !http_game_status.completed && !http_game_status.aborted) {
+        game_session_resume_requested = true;
+    }
+}
+
+void get_game_status_for_http(http_game_status_t *status)
+{
+    if (status) {
+        *status = http_game_status;
+    }
+}
+
+static void ble_connection_monitor_task(void *arg)
 {
     bool last_connected = false;
 
@@ -329,13 +403,6 @@ static void connection_monitor_task(void *arg)
 
         vTaskDelay(pdMS_TO_TICKS(200));
     }
-}
-
-static void IRAM_ATTR button_isr_handler(void* arg) {
-    button_event_t evt;
-    evt.pin = (gpio_num_t)arg;
-    evt.timestamp = xTaskGetTickCountFromISR();
-    xQueueSendFromISR(button_queue, &evt, NULL);
 }
 
 static void led_handler_task(void* arg) {
@@ -367,99 +434,22 @@ static void led_handler_task(void* arg) {
     }
 }
 
-static void button_handler_task(void* arg) {
-    button_event_t evt;
-    static uint32_t last_time[3] = {0, 0, 0};
-    int button_idx = 0;
-    
-    // Map GPIO pins to indices for debounce tracking
-    gpio_num_t button_pins[3] = {BUTTON1_GPIO, BUTTON2_GPIO, BUTTON3_GPIO};
-    
-    while (1) {
-        if (xQueueReceive(button_queue, &evt, portMAX_DELAY)) {
-            // Find button index
-            for (int i = 0; i < 3; i++) {
-                if (button_pins[i] == evt.pin) {
-                    button_idx = i;
-                    break;
-                }
-            }
-            
-            uint32_t time_diff = (evt.timestamp - last_time[button_idx]) * portTICK_PERIOD_MS;
-            if (time_diff >= DEBOUNCE_TIME_MS) {
-                last_time[button_idx] = evt.timestamp;
-                
-                // Handle button press
-                ESP_LOGI(TAG, "Button %d pressed", button_idx + 1);
-                
-                switch (current_state) {
-                    case DISCONNECTED:
-                        // No action on button press when disconnected
-                        break;
-                    case IDLE:
-                        if (button_idx == 0) {
-                            start_game_session();
-                            previous_state = IDLE;
-                            current_state = ACTIVE_ROUND;
-                        }
-                        break;
-                    case ACTIVE_ROUND:
-                        if (button_idx == 1) {
-                            current_state = ENDING;
-                            previous_state = ACTIVE_ROUND;
-                        }
-                        break;
-                    case ENDING:
-                        if (button_idx == 1) {
-                            // Send by BLE to the other node that the game is ending
-                            esp_err_t w = ble_write_cmd_end(1);
-                            if (w != ESP_OK) {
-                                ESP_LOGE(TAG, "Failed to write end command via BLE");
-                            }
-                            current_state = IDLE;
-                            previous_state = ENDING;
-                        } else {
-                            // continue game, return to previous state
-                            current_state = previous_state;
-                        }
-                        break;
-                    case BETWEEN_ROUNDS:
-                        if (button_idx == 1) {
-                            current_state = ENDING;
-                            previous_state = BETWEEN_ROUNDS;
-                        }
-                        if (button_idx == 0 || button_idx == 2) {
-                            game_session_resume_requested = true;
-                        }
-                        break;
-                    default:
-                        break;
-                }
-            }
-        }
-
-        vTaskDelay(10 / portTICK_PERIOD_MS);
-    }
-}
 
 void app_main(void)
 {
+    esp_err_t nvs_ret = nvs_flash_init();
+    if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_ret);
+
     mount_filesystem();
 
     gpio_setup();
 
-    button_queue = xQueueCreate(BUTTON_QUEUE_SIZE, sizeof(button_event_t));
-    if (!button_queue) {
-        ESP_LOGE(TAG, "Failed to create button queue");
-        return;
-    }
-
     ble_init();
     ble_register_notify_cb(ble_notification_handler);
-
-    if (!load_game_history_index_from_nvs()) {
-        ESP_LOGW(TAG, "Game history index could not be loaded; new sessions will start from slot 0");
-    }
 
     wifi_init_sta(MY_SSID, MY_PASS);
     while (!wifi_connected) {
@@ -471,15 +461,7 @@ void app_main(void)
         return;
     }
 
-    xTaskCreate(connection_monitor_task, "connection_monitor", 2048, NULL, 9, NULL);
-
-    ESP_ERROR_CHECK(gpio_install_isr_service(0));
-    
-    // Attach ISR handler for each button
-    ESP_ERROR_CHECK(gpio_isr_handler_add(BUTTON1_GPIO, button_isr_handler, (void*)BUTTON1_GPIO));
-    ESP_ERROR_CHECK(gpio_isr_handler_add(BUTTON2_GPIO, button_isr_handler, (void*)BUTTON2_GPIO));
-    ESP_ERROR_CHECK(gpio_isr_handler_add(BUTTON3_GPIO, button_isr_handler, (void*)BUTTON3_GPIO));
+    xTaskCreate(ble_connection_monitor_task, "connection_monitor", 2048, NULL, 9, NULL);
 
     xTaskCreate(led_handler_task, "led_handler", 2048, NULL, 10, NULL);
-    xTaskCreate(button_handler_task, "button_handler", 2048, NULL, 10, NULL);
 }
