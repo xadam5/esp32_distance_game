@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Distance Game</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef2f7;
+      --panel: #ffffff;
+      --text: #18202c;
+      --muted: #667085;
+      --line: #d8e0ea;
+      --accent: #0f766e;
+      --accent-2: #115e59;
+      --shadow: 0 12px 30px rgba(15, 23, 42, 0.10);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, Helvetica, sans-serif; background: var(--bg); color: var(--text); }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 40px 20px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); padding: 28px; }
+    h1 { margin: 0 0 10px; font-size: 1.8rem; }
+    .subtitle { margin: 0 0 18px; color: var(--muted); line-height: 1.5; }
+    .stage { margin-top: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: #f8fafc; }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+    button { appearance: none; border: 0; border-radius: 999px; padding: 12px 18px; font-size: 0.95rem; font-weight: 700; color: white; background: linear-gradient(135deg, var(--accent), var(--accent-2)); cursor: pointer; }
+    button:hover { filter: brightness(1.02); }
+    .meta { color: var(--muted); margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="card">
+      <h1 id="title">Distance Game</h1>
+      <p id="subtitle" class="subtitle">Starting game session…</p>
+      <div id="stage" class="stage">
+        <div id="message">Preparing the game…</div>
+      </div>
+      <div class="actions">
+        <button id="primary-button" type="button" onclick="window.location.href='/api/game'">Refresh</button>
+        <button id="secondary-link" type="button" onclick="endGame()">End Game</button>
+      </div>
+    </section>
+  </main>
+  <script>
+    async function endGame() {
+      try {
+        const response = await fetch('/api/game/end', { method: 'POST' });
+        if (response.redirected) {
+          window.location.href = response.url;
+          return;
+        }
+      } catch (error) {
+        // Fall through to the default landing page if the request fails.
+      }
+
+      window.location.href = '/';
+    }
+
+    function updateView(state) {
+      const title = document.getElementById('title');
+      const subtitle = document.getElementById('subtitle');
+      const message = document.getElementById('message');
+      const primaryButton = document.getElementById('primary-button');
+      const secondaryLink = document.getElementById('secondary-link');
+
+      if (!state) {
+        return;
+      }
+
+      if (state.waiting_for_round) {
+        title.textContent = 'Round ' + state.current_round + ' in progress';
+        subtitle.textContent = 'Play a round on the controller and wait for the result.';
+
+        const targetValue = Number(state.target_number);
+        const targetText = Number.isFinite(targetValue) && targetValue >= 0
+          ? 'Target distance is ' + targetValue + ' mm.\nWaiting for players to submit their measurements…'
+          : 'Waiting for the current target to be generated…';
+
+        message.textContent = targetText;
+        primaryButton.textContent = 'Refresh';
+        primaryButton.onclick = function () { window.location.href = '/api/game'; };
+        primaryButton.style.display = 'inline-block';
+        secondaryLink.style.display = 'inline-block';
+      } else if (state.round_result_ready) {
+        title.textContent = 'Round result';
+        subtitle.textContent = 'The round is complete. Continue to the next round when ready.';
+        message.innerHTML = 'Target: ' + state.target_number + '<br>' +
+          'P1: ' + state.p1_measurement + ' mm (diff ' + state.p1_distance + ')<br>' +
+          'P2: ' + state.p2_measurement + ' mm (diff ' + state.p2_distance + ')<br>' +
+          'Score: ' + state.p1_score + ':' + state.p2_score + '<br>' +
+          'Total: ' + state.total_p1_score + ':' + state.total_p2_score;
+        primaryButton.textContent = 'Continue';
+        primaryButton.onclick = function () { window.location.href = '/api/game?continue=1'; };
+        primaryButton.style.display = 'inline-block';
+        secondaryLink.style.display = 'none';
+      } else if (state.final_result_ready) {
+        title.textContent = 'Match complete';
+        subtitle.textContent = 'The full match is finished.';
+        message.innerHTML = 'Final score: ' + state.total_p1_score + ':' + state.total_p2_score + '<br>' +
+          'Thanks for playing.';
+        primaryButton.textContent = 'Return Home';
+        primaryButton.onclick = function () { window.location.href = '/'; };
+        primaryButton.style.display = 'inline-block';
+        secondaryLink.style.display = 'none';
+      } else {
+        title.textContent = 'Distance Game';
+        subtitle.textContent = 'Starting game session…';
+        message.textContent = 'Preparing the game…';
+        primaryButton.textContent = 'Refresh';
+        primaryButton.onclick = function () { window.location.href = '/api/game'; };
+        primaryButton.style.display = 'inline-block';
+        secondaryLink.style.display = 'none';
+      }
+    }
+
+    function fetchState() {
+      fetch('/api/game/status')
+        .then(function (response) { return response.json(); })
+        .then(function (data) { updateView(data); })
+        .catch(function () { });
+    }
+
+    setInterval(fetchState, 1000);
+    fetchState();
+  </script>
+</body>
+</html>

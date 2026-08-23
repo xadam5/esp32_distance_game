@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Distance Game History</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef2f7;
+      --panel: #ffffff;
+      --text: #18202c;
+      --muted: #667085;
+      --line: #d8e0ea;
+      --accent: #0f766e;
+      --accent-2: #115e59;
+      --danger: #b42318;
+      --shadow: 0 12px 30px rgba(15, 23, 42, 0.10);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(17, 94, 89, 0.10), transparent 35%),
+        radial-gradient(circle at top right, rgba(15, 118, 110, 0.10), transparent 28%),
+        var(--bg);
+      color: var(--text);
+    }
+
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 20px 28px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    header {
+      padding: 24px 24px 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.5rem, 2vw, 2.25rem);
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      margin: 8px 0 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .table-wrap {
+      padding: 20px 24px 10px;
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 980px;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 12px 10px;
+      text-align: left;
+      vertical-align: top;
+      font-size: 0.95rem;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    tbody tr:nth-child(even) {
+      background: #f8fafc;
+    }
+
+    .empty {
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    .status {
+      font-weight: 700;
+    }
+
+    .status.completed {
+      color: var(--accent);
+    }
+
+    .status.aborted {
+      color: var(--danger);
+    }
+
+    .status.active {
+      color: #7c3aed;
+    }
+
+    .round {
+      line-height: 1.45;
+      white-space: nowrap;
+    }
+
+    .footer {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      padding: 14px 24px 24px;
+      border-top: 1px solid var(--line);
+      background: linear-gradient(to bottom, rgba(248, 250, 252, 0), #f8fafc);
+    }
+
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: white;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      cursor: pointer;
+      box-shadow: 0 8px 18px rgba(15, 118, 110, 0.26);
+    }
+
+    button:hover {
+      filter: brightness(1.02);
+    }
+
+    button:disabled {
+      cursor: wait;
+      opacity: 0.75;
+    }
+
+    .secondary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+      color: var(--accent-2);
+      background: #e6fffb;
+      border: 1px solid rgba(15, 118, 110, 0.16);
+    }
+
+    .secondary:hover {
+      filter: brightness(0.98);
+    }
+
+    .message {
+      padding: 0 24px 18px;
+      color: var(--muted);
+      min-height: 1.5em;
+    }
+
+    @media (max-width: 700px) {
+      .wrap {
+        padding: 14px;
+      }
+
+      header,
+      .table-wrap,
+      .footer,
+      .message {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="card">
+      <header>
+        <h1>Game History</h1>
+        <p class="subtitle">Last 20 matches stored in FAT.</p>
+      </header>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Slot</th>
+              <th>Status</th>
+              <th>Total</th>
+              <th>Round 1</th>
+              <th>Round 2</th>
+              <th>Round 3</th>
+            </tr>
+          </thead>
+          <tbody>
+<!--HISTORY_ROWS-->
+          </tbody>
+        </table>
+      </div>
+
+      <div class="footer">
+        <a class="secondary" href="/">Back to main page</a>
+        <form action="/api/history/erase" method="post">
+          <button type="submit" onclick="return confirm('Erase all stored matches?');">Erase all matches</button>
+        </form>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
