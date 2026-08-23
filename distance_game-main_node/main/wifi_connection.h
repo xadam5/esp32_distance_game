@@ -5,8 +5,6 @@
 #include <esp_wifi.h>
 #include <esp_log.h>
 
-extern const char* TAG;
-
 extern volatile bool wifi_connected;
 
 void wifi_init_sta(char* ssid, char* password);
