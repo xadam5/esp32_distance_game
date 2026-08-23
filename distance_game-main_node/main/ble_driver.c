@@ -17,7 +17,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
-#define GATTC_TAG "GATTC_DEMO"
+#define GATTC_TAG "GATTC"
 #define REMOTE_SERVICE_UUID        0x00FF
 #define REMOTE_NOTIFY_CHAR_UUID    0xFF01
 #define PROFILE_NUM      1
@@ -42,17 +42,6 @@ typedef struct {
     uint8_t data[NOTIFY_MAX_LEN];
 } notify_msg_t;
 static QueueHandle_t notify_queue = NULL;
-static TaskHandle_t notify_task_handle = NULL;
-
-static void notify_dispatch_task(void *arg)
-{
-    notify_msg_t msg;
-    while (1) {
-        if (xQueueReceive(notify_queue, &msg, portMAX_DELAY) == pdTRUE) {
-            if (user_notify_cb) user_notify_cb(msg.uuid, msg.data, msg.len);
-        }
-    }
-}
 
 bool ble_is_connected(void)
 {
@@ -457,7 +446,7 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
             msg.uuid = uuid16;
             msg.len = (p_data->notify.value_len > NOTIFY_MAX_LEN) ? NOTIFY_MAX_LEN : p_data->notify.value_len;
             if (msg.len > 0) memcpy(msg.data, p_data->notify.value, msg.len);
-            if (xQueueSend(notify_queue, &msg, 0) != pdTRUE) {
+            if (xQueueSend(notify_queue, &msg, portMAX_DELAY) != pdTRUE) {
                 ESP_LOGW(GATTC_TAG, "notify queue full, dropping notification for uuid=0x%04x", uuid16);
                 ESP_LOG_BUFFER_HEX(GATTC_TAG, p_data->notify.value, p_data->notify.value_len);
             }
@@ -469,6 +458,10 @@ static void gattc_profile_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_
                 ESP_LOGE(GATTC_TAG, "notify_queue not initialized — dropping notification for uuid=0x%04x", uuid16);
                 ESP_LOG_BUFFER_HEX(GATTC_TAG, p_data->notify.value, p_data->notify.value_len);
             }
+        }
+
+        if (user_notify_cb) {
+            user_notify_cb(uuid16, p_data->notify.value, p_data->notify.value_len);
         }
         break;
     }
@@ -528,12 +521,12 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
         esp_ble_gap_cb_param_t *scan_result = (esp_ble_gap_cb_param_t *)param;
         switch (scan_result->scan_rst.search_evt) {
         case ESP_GAP_SEARCH_INQ_RES_EVT:
-            ESP_LOG_BUFFER_HEX(GATTC_TAG, scan_result->scan_rst.bda, 6);
-            ESP_LOGI(GATTC_TAG, "searched Adv Data Len %d, Scan Response Len %d", scan_result->scan_rst.adv_data_len, scan_result->scan_rst.scan_rsp_len);
+            // ESP_LOG_BUFFER_HEX(GATTC_TAG, scan_result->scan_rst.bda, 6);
+            // ESP_LOGI(GATTC_TAG, "searched Adv Data Len %d, Scan Response Len %d", scan_result->scan_rst.adv_data_len, scan_result->scan_rst.scan_rsp_len);
             adv_name = esp_ble_resolve_adv_data(scan_result->scan_rst.ble_adv,
                                                 ESP_BLE_AD_TYPE_NAME_CMPL, &adv_name_len);
-            ESP_LOGI(GATTC_TAG, "searched Device Name Len %d", adv_name_len);
-            esp_log_buffer_char(GATTC_TAG, adv_name, adv_name_len);
+            // ESP_LOGI(GATTC_TAG, "searched Device Name Len %d", adv_name_len);
+            // ESP_LOG_BUFFER_CHAR(GATTC_TAG, adv_name, adv_name_len);
 
 #if CONFIG_EXAMPLE_DUMP_ADV_DATA_AND_SCAN_RESP
             if (scan_result->scan_rst.adv_data_len > 0) {
@@ -545,7 +538,6 @@ static void esp_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
                 ESP_LOG_BUFFER_HEX(GATTC_TAG, &scan_result->scan_rst.ble_adv[scan_result->scan_rst.adv_data_len], scan_result->scan_rst.scan_rsp_len);
             }
 #endif
-            ESP_LOGI(GATTC_TAG, " ");
 
             if (adv_name != NULL) {
                 if (strlen(remote_device_name) == adv_name_len && strncmp((char *)adv_name, remote_device_name, adv_name_len) == 0) {
@@ -688,13 +680,6 @@ void ble_init(void)
         notify_queue = xQueueCreate(NOTIFY_QUEUE_LEN, sizeof(notify_msg_t));
         if (!notify_queue) {
             ESP_LOGE(GATTC_TAG, "Failed to create notify queue");
-        }
-    }
-    /* Start the dispatch task so notifications are always processed in task context */
-    if (notify_queue && notify_task_handle == NULL) {
-        xTaskCreate(notify_dispatch_task, "ble_notify_dispatch", 4096, NULL, tskIDLE_PRIORITY + 2, &notify_task_handle);
-        if (notify_task_handle == NULL) {
-            ESP_LOGE(GATTC_TAG, "Failed to create notify dispatch task");
         }
     }
 }
