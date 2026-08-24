@@ -469,36 +469,41 @@ static const esp_gatts_attr_db_t gatt_db[GAME_IDX_NB] =
 static void ble_driver_notify_bool(uint16_t handle, uint8_t value, bool indicate)
 {
     if (ble_gatts_if == ESP_GATT_IF_NONE || !ble_connected) {
+        ESP_LOGW(GATTS_TABLE_TAG, "BLE not connected or GATT interface not ready, cannot send notification");
         return;
     }
 
     if (!game_end_notify_enabled) {
+        ESP_LOGW(GATTS_TABLE_TAG, "Notification for game ending is disabled");
         return;
     }
 
     esp_err_t err = esp_ble_gatts_set_attr_value(handle, sizeof(value), &value);
     if (err != ESP_OK) {
-        ESP_LOGE(GATTS_TABLE_TAG, "set attr value failed for handle %d: %s", handle, esp_err_to_name(err));
+        ESP_LOGW(GATTS_TABLE_TAG, "set attr value failed for handle %d: %s", handle, esp_err_to_name(err));
         return;
     }
 
     err = esp_ble_gatts_send_indicate(ble_gatts_if, ble_conn_id, handle, sizeof(value), &value, indicate);
     if (err != ESP_OK) {
-        ESP_LOGE(GATTS_TABLE_TAG, "send indicate failed for handle %d: %s", handle, esp_err_to_name(err));
+        ESP_LOGW(GATTS_TABLE_TAG, "send indicate failed for handle %d: %s", handle, esp_err_to_name(err));
     }
 }
 
 static void ble_driver_notify_u16(uint16_t handle, uint16_t value, bool indicate)
 {
     if (ble_gatts_if == ESP_GATT_IF_NONE || !ble_connected) {
+        ESP_LOGW(GATTS_TABLE_TAG, "BLE not connected or GATT interface not ready, cannot send notification");
         return;
     }
 
     if (handle == game_handle_table[IDX_CHAR_VAL_MEAS_P1] && !meas_p1_notify_enabled) {
+        ESP_LOGW(GATTS_TABLE_TAG, "Notification for Player 1 measurement is disabled");
         return;
     }
 
     if (handle == game_handle_table[IDX_CHAR_VAL_MEAS_P2] && !meas_p2_notify_enabled) {
+        ESP_LOGW(GATTS_TABLE_TAG, "Notification for Player 2 measurement is disabled");
         return;
     }
 
@@ -509,14 +514,15 @@ static void ble_driver_notify_u16(uint16_t handle, uint16_t value, bool indicate
 
     esp_err_t err = esp_ble_gatts_set_attr_value(handle, sizeof(payload), payload);
     if (err != ESP_OK) {
-        ESP_LOGE(GATTS_TABLE_TAG, "set attr value failed for handle %d: %s", handle, esp_err_to_name(err));
+        ESP_LOGW(GATTS_TABLE_TAG, "set attr value failed for handle %d: %s", handle, esp_err_to_name(err));
         return;
     }
 
     err = esp_ble_gatts_send_indicate(ble_gatts_if, ble_conn_id, handle, sizeof(payload), payload, indicate);
     if (err != ESP_OK) {
-        ESP_LOGE(GATTS_TABLE_TAG, "send indicate failed for handle %d: %s", handle, esp_err_to_name(err));
+        ESP_LOGW(GATTS_TABLE_TAG, "send indicate failed for handle %d: %s", handle, esp_err_to_name(err));
     }
+    ESP_LOGI(GATTS_TABLE_TAG, "Sent notification for handle %d with value %d", handle, value);
 }
 
 void ble_driver_send_measurements(uint16_t player1_measurement, uint16_t player2_measurement)

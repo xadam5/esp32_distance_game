@@ -250,8 +250,8 @@ void app_main(void) {
     ESP_ERROR_CHECK(gpio_isr_handler_add(BUTTON2_GPIO, button_isr_handler, (void*)BUTTON2_GPIO));
     ESP_ERROR_CHECK(gpio_isr_handler_add(BUTTON3_GPIO, button_isr_handler, (void*)BUTTON3_GPIO));
 
-    xTaskCreate(ble_handler_task, "ble_handler", 2048, NULL, 10, NULL);
+    xTaskCreate(ble_handler_task, "ble_handler", 8192, NULL, 10, NULL);
     xTaskCreate(led_handler_task, "led_handler", 2048, NULL, 10, NULL);
-    xTaskCreate(button_handler_task, "button_handler", 2048, NULL, 10, NULL);
-    xTaskCreate(vl53l0x_task, "vl53l0x_task", 4096, NULL, 10, NULL);
+    xTaskCreate(button_handler_task, "button_handler", 8192, NULL, 10, NULL);
+    xTaskCreate(vl53l0x_task, "vl53l0x_task", 8192, NULL, 10, NULL);
 }
